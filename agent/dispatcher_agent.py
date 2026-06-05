@@ -11,7 +11,9 @@ class DispatcherAgent:
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not set in .env")
         
-        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=api_key)
+        # Keep gemini-3.5-flash as per your current configuration.
+        self.llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash", api_key=api_key)
+        
         self.tools = {
             "get_current_routes": get_current_routes,
             "mark_drivers_unavailable": mark_drivers_unavailable,
@@ -24,6 +26,19 @@ class DispatcherAgent:
             block_road_segment, 
             get_stop_info
         ])
+
+    def _get_clean_text(self, response):
+        """Extracts plain text from LangChain message content, handling both strings and lists."""
+        content = response.content if hasattr(response, 'content') else str(response)
+        
+        if isinstance(content, str):
+            return content
+        
+        if isinstance(content, list):
+            # Join all text parts, ignoring non-text components like signatures or metadata
+            return "".join([part.get("text", "") if isinstance(part, dict) else str(part) for part in content])
+            
+        return str(content)
 
     def invoke(self, input_dict):
         user_message = input_dict.get("input", "")
@@ -41,7 +56,7 @@ class DispatcherAgent:
             messages.append(response)
             
             if not hasattr(response, 'tool_calls') or not response.tool_calls:
-                final_text = response.content if hasattr(response, 'content') else str(response)
+                final_text = self._get_clean_text(response)
                 print(f"[Agent] Final response: {final_text}")
                 return {"output": final_text}
             
@@ -76,7 +91,8 @@ class DispatcherAgent:
             
             if not tool_results_added:
                 print("[Agent] No tools were called. Breaking to avoid infinite loop.")
-                return {"output": response.content if hasattr(response, 'content') else "No response"}
+                final_text = self._get_clean_text(response)
+                return {"output": final_text}
         
         return {"output": f"Max iterations ({max_iterations}) reached without final response"}
 

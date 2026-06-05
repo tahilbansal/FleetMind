@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+sqlalchemy
+langchain
+langchain-google-genai
+langchain-core
+httpx
+ortools
+numpy
+streamlit
+folium
+requests

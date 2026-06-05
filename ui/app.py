@@ -109,38 +109,65 @@ st.divider()
 # --- Main Content ---
 col1, col2 = st.columns([3, 1.5])
 
-with col1:
-    st.subheader("📍 Fleet Operations Map")
-    try:
-        map_resp = httpx.get("http://localhost:8000/routes/map", timeout=30.0)
-        if map_resp.status_code == 200:
-            html = map_resp.json().get("html", "")
-            st.components.v1.html(html, height=600)
-    except Exception as e:
-        st.warning(f"Map temporarily unavailable: {e}")
+tab_ops, tab_history = st.tabs(["🚀 Live Operations", "📜 Operational History"])
 
-with col2:
-    st.subheader("💬 AI Dispatcher")
-    
-    chat_container = st.container(height=500)
-    with chat_container:
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
-    
-    user_input = st.chat_input("Inform dispatcher of disruptions...")
-    
-    if user_input:
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.spinner("🤖 Analyzing & Replanning..."):
-            try:
-                result = st.session_state.agent.invoke({"input": user_input})
-                response = result.get("output", "Processing complete.")
-                st.session_state.messages.append({"role": "assistant", "content": response})
-                fetch_current_state()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Agent error: {e}")
+with tab_ops:
+    col1, col2 = st.columns([3, 1.5])
+    with col1:
+        st.subheader("📍 Fleet Operations Map")
+        try:
+            map_resp = httpx.get("http://localhost:8000/routes/map", timeout=30.0)
+            if map_resp.status_code == 200:
+                html = map_resp.json().get("html", "")
+                st.components.v1.html(html, height=600)
+        except Exception as e:
+            st.warning(f"Map temporarily unavailable")
+
+    with col2:
+        st.subheader("💬 AI Dispatcher")
+        chat_container = st.container(height=500)
+        with chat_container:
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    st.write(msg["content"])
+        
+        user_input = st.chat_input("Inform dispatcher of disruptions...")
+        if user_input:
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            with st.spinner("🤖 Analyzing & Replanning..."):
+                try:
+                    result = st.session_state.agent.invoke({"input": user_input})
+                    response = result.get("output", "Processing complete.")
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    fetch_current_state()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Agent error: {e}")
+
+with tab_history:
+    st.subheader("Optimization & Disruption Logs")
+    try:
+        hist_resp = httpx.get("http://localhost:8000/history")
+        if hist_resp.status_code == 200:
+            data = hist_resp.json()
+            
+            st.write("### Recent Disruptions")
+            if data["disruptions"]:
+                st.table(data["disruptions"])
+            else:
+                st.info("No disruptions recorded yet.")
+                
+            st.write("### Route Plan Performance")
+            if data["plans"]:
+                plan_data = [{
+                    "Time": p["created_at"],
+                    "Vehicles": p["num_vehicles"],
+                    "Distance (km)": f"{p['total_distance_km']:.2f}",
+                    "Solve Time (ms)": f"{p['solve_time_ms']:.1f}"
+                } for p in data["plans"]]
+                st.dataframe(plan_data, use_container_width=True)
+    except Exception as e:
+        st.error("Could not load history.")
 
 # --- Optimized Route Details ---
 if st.session_state.current_solution:

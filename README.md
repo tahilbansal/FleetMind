@@ -47,7 +47,7 @@ FleetMind is a production-ready Vehicle Routing Problem (VRP) management system.
 
 3. **Install dependencies**:
    ```bash
-   pip install -r requirements.txt
+   pip install --upgrade pip && pip install -r requirements.txt
    ```
 
 4. **Configure Environment Variables**:

@@ -1,32 +1,38 @@
 # api/main.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
-import os
+import os, time
+from sqlalchemy.orm import Session
 
 load_dotenv()
 
-from solver.data_model import RouteState, Stop, build_distance_matrix
+from .schemas.vrp import RouteState, Stop
+from solver.data_model import build_distance_matrix
 from solver.vrp_solver import solve_vrp
+from .db.session import engine, get_db
+from .db.base import Base
+from .db import models  # Importing the models package registers them with Base
+
+# Initialize database tables
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="VRP Dispatch API")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
-# In-memory state (replace with Redis/DB in production)
-current_state: Optional[RouteState] = None
-current_solution: Optional[dict] = None
+def get_latest_plan(db: Session):
+    return db.query(models.RoutePlan).order_by(models.RoutePlan.id.desc()).first()
 
 @app.post("/routes/initialize")
-def initialize_routes(state: RouteState):
+def initialize_routes(state: RouteState, db: Session = Depends(get_db)):
     """Set up the initial route state and solve."""
-    global current_state, current_solution
-    current_state = state
     matrix = build_distance_matrix(state.stops)
     
+    start_time = time.time()
     result = solve_vrp(
         distance_matrix=matrix,
         num_vehicles=state.num_vehicles,
@@ -34,11 +40,22 @@ def initialize_routes(state: RouteState):
         demands=[s.demand for s in state.stops],
         vehicle_capacities=state.vehicle_capacities,
     )
-    current_solution = {**result, "status": "SUCCESS"}
-    return current_solution
+    solve_time_ms = (time.time() - start_time) * 1000
+
+    new_plan = models.RoutePlan(
+        num_vehicles=state.num_vehicles,
+        num_stops=len(state.stops),
+        total_distance_km=result.get("total_distance", 0) / 1000.0,
+        solve_time_ms=solve_time_ms,
+        routes=result,
+        state=state.dict()
+    )
+    db.add(new_plan)
+    db.commit()
+    return {**result, "status": "SUCCESS"}
 
 @app.post("/routes/replan")
-def replan_routes(disruption: dict):
+def replan_routes(disruption: dict, db: Session = Depends(get_db)):
     """
     Accepts a structured disruption event and replans.
     disruption = {
@@ -49,9 +66,11 @@ def replan_routes(disruption: dict):
         "target_driver": int (optional)
     }
     """
-    global current_state, current_solution
-    if not current_state:
+    prev_plan = get_latest_plan(db)
+    if not prev_plan:
         raise HTTPException(400, "No active route state. Call /routes/initialize first.")
+    
+    current_state = RouteState(**prev_plan.state)
     
     # Apply disruption to state
     if disruption.get("type") == "driver_unavailable":
@@ -79,6 +98,7 @@ def replan_routes(disruption: dict):
     for d in current_state.unavailable_drivers:
         capacities[d] = 0
     
+    start_time = time.time()
     result = solve_vrp(
         distance_matrix=matrix,
         num_vehicles=current_state.num_vehicles,
@@ -86,18 +106,51 @@ def replan_routes(disruption: dict):
         demands=[s.demand for s in current_state.stops],
         vehicle_capacities=capacities,
     )
-    current_solution = {**result, "status": "SUCCESS"}
-    return current_solution
+    solve_time_ms = (time.time() - start_time) * 1000
+
+    # Log Disruption
+    dist_before = prev_plan.total_distance_km
+    dist_after = result.get("total_distance", 0) / 1000.0
+    
+    event = models.DisruptionEvent(
+        description=disruption.get("description", "Manual override"),
+        disruption_type=disruption.get("type"),
+        distance_before_km=dist_before,
+        distance_after_km=dist_after,
+        replan_time_ms=solve_time_ms
+    )
+    db.add(event)
+
+    # Create new plan
+    new_plan = models.RoutePlan(
+        num_vehicles=current_state.num_vehicles,
+        num_stops=len(current_state.stops),
+        total_distance_km=dist_after,
+        solve_time_ms=solve_time_ms,
+        routes=result,
+        state=current_state.dict()
+    )
+    db.add(new_plan)
+    db.commit()
+    
+    return {**result, "status": "SUCCESS"}
 
 @app.get("/routes/current")
-def get_current_routes():
-    return {"state": current_state, "solution": current_solution}
+def get_current_routes(db: Session = Depends(get_db)):
+    plan = get_latest_plan(db)
+    return {"state": plan.state if plan else None, "solution": plan.routes if plan else None}
+
+@app.get("/history")
+def get_history(db: Session = Depends(get_db)):
+    plans = db.query(models.RoutePlan).order_by(models.RoutePlan.created_at.desc()).limit(10).all()
+    disruptions = db.query(models.DisruptionEvent).order_by(models.DisruptionEvent.timestamp.desc()).limit(10).all()
+    return {"plans": plans, "disruptions": disruptions}
 
 @app.get("/routes/map")
-def get_map():
-    """Returns HTML of the Folium map for the current solution."""
+def get_map(db: Session = Depends(get_db)):
     from viz.map_renderer import render_route_map
-    if not current_state or not current_solution:
+    plan = get_latest_plan(db)
+    if not plan:
         raise HTTPException(400, "No solution available.")
-    html = render_route_map(current_state, current_solution)
+    html = render_route_map(RouteState(**plan.state), plan.routes)
     return {"html": html}
