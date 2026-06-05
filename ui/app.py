@@ -28,6 +28,9 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         border: 1px solid rgba(128, 128, 128, 0.2);
     }
+    [data-testid="stMetricValue"] {
+        font-size: 1.5rem !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -67,30 +70,16 @@ with st.sidebar:
 
 # --- Auto-Initialization Logic ---
 if not st.session_state.initialized:
-    sample_state = {
-        "stops": [
-            {"id": 0, "name": "Manhattan Logistics Center", "lat": 40.735, "lon": -74.006, "demand": 0},
-            {"id": 1, "name": "Hell's Kitchen Delivery", "lat": 40.763, "lon": -73.992, "demand": 2},
-            {"id": 2, "name": "UWS Apartments", "lat": 40.783, "lon": -73.980, "demand": 1},
-            {"id": 3, "name": "UES Medical Center", "lat": 40.773, "lon": -73.956, "demand": 3},
-            {"id": 4, "name": "Midtown Office Hub", "lat": 40.754, "lon": -73.972, "demand": 2},
-            {"id": 5, "name": "Chelsea Market Drop-off", "lat": 40.746, "lon": -74.001, "demand": 4},
-            {"id": 6, "name": "Washington Square Park", "lat": 40.733, "lon": -73.997, "demand": 1},
-            {"id": 7, "name": "East Village Cafe", "lat": 40.729, "lon": -73.987, "demand": 2},
-            {"id": 8, "name": "LES Retail Store", "lat": 40.715, "lon": -73.988, "demand": 3},
-            {"id": 9, "name": "FiDi Tech Office", "lat": 40.707, "lon": -74.011, "demand": 2}
-        ],
-        "num_vehicles": 4,
-        "vehicle_capacities": [10, 10, 10, 10],
-        "depot_id": 0
-    }
-    with st.spinner("🚀 Initializing Optimized Fleet Routes..."):
+    with st.spinner("🚀 Bootstrapping Fleet Configuration from Database..."):
         try:
-            resp = httpx.post("http://localhost:8000/routes/initialize", json=sample_state, timeout=30.0)
-            if resp.status_code == 200:
-                st.session_state.initialized = True
-                fetch_current_state()
-                st.rerun()
+            config_resp = httpx.get("http://localhost:8000/routes/config")
+            if config_resp.status_code == 200:
+                state_data = config_resp.json()
+                init_resp = httpx.post("http://localhost:8000/routes/initialize", json=state_data, timeout=30.0)
+                if init_resp.status_code == 200:
+                    st.session_state.initialized = True
+                    fetch_current_state()
+                    st.rerun()
         except Exception as e:
             st.error(f"Failed to auto-start: {e}")
             st.stop()

@@ -12,7 +12,7 @@ load_dotenv()
 from .schemas.vrp import RouteState, Stop
 from solver.data_model import build_distance_matrix
 from solver.vrp_solver import solve_vrp
-from .db.session import engine, get_db
+from .db.session import engine, get_db, SessionLocal
 from .db.base import Base
 from .db import models  # Importing the models package registers them with Base
 
@@ -23,6 +23,35 @@ app = FastAPI(title="VRP Dispatch API")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
+
+@app.on_event("startup")
+def seed_fleet_config():
+    """Ensures the database has a default fleet configuration on startup."""
+    db = SessionLocal()
+    try:
+        default_exists = db.query(models.FleetConfig).filter(models.FleetConfig.name == "default").first()
+        if not default_exists:
+            sample_state = {
+                "stops": [
+                    {"id": 0, "name": "Manhattan Logistics Center", "lat": 40.735, "lon": -74.006, "demand": 0},
+                    {"id": 1, "name": "Hell's Kitchen Delivery", "lat": 40.763, "lon": -73.992, "demand": 2},
+                    {"id": 2, "name": "UWS Apartments", "lat": 40.783, "lon": -73.980, "demand": 1},
+                    {"id": 3, "name": "UES Medical Center", "lat": 40.773, "lon": -73.956, "demand": 3},
+                    {"id": 4, "name": "Midtown Office Hub", "lat": 40.754, "lon": -73.972, "demand": 2},
+                    {"id": 5, "name": "Chelsea Market Drop-off", "lat": 40.746, "lon": -74.001, "demand": 4},
+                    {"id": 6, "name": "Washington Square Park", "lat": 40.733, "lon": -73.997, "demand": 1},
+                    {"id": 7, "name": "East Village Cafe", "lat": 40.729, "lon": -73.987, "demand": 2},
+                    {"id": 8, "name": "LES Retail Store", "lat": 40.715, "lon": -73.988, "demand": 3},
+                    {"id": 9, "name": "FiDi Tech Office", "lat": 40.707, "lon": -74.011, "demand": 2}
+                ],
+                "num_vehicles": 4,
+                "vehicle_capacities": [10, 10, 10, 10],
+                "depot_id": 0
+            }
+            db.add(models.FleetConfig(name="default", config=sample_state))
+            db.commit()
+    finally:
+        db.close()
 
 def get_latest_plan(db: Session):
     return db.query(models.RoutePlan).order_by(models.RoutePlan.id.desc()).first()
@@ -145,6 +174,14 @@ def get_history(db: Session = Depends(get_db)):
     plans = db.query(models.RoutePlan).order_by(models.RoutePlan.created_at.desc()).limit(10).all()
     disruptions = db.query(models.DisruptionEvent).order_by(models.DisruptionEvent.timestamp.desc()).limit(10).all()
     return {"plans": plans, "disruptions": disruptions}
+
+@app.get("/routes/config")
+def get_fleet_config(name: str = "default", db: Session = Depends(get_db)):
+    """Retrieves a stored fleet configuration template."""
+    cfg = db.query(models.FleetConfig).filter(models.FleetConfig.name == name).first()
+    if not cfg:
+        raise HTTPException(404, f"Configuration '{name}' not found")
+    return cfg.config
 
 @app.get("/routes/map")
 def get_map(db: Session = Depends(get_db)):
