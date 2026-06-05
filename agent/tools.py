@@ -2,6 +2,7 @@
 from langchain.tools import tool
 import httpx
 import json
+from typing import List, Union
 
 BASE_URL = "http://localhost:8000"
 
@@ -30,24 +31,32 @@ def get_current_routes() -> str:
         return f"Error getting routes: {str(e)}"
 
 @tool
-def mark_driver_unavailable(driver_id: int) -> str:
+def mark_drivers_unavailable(driver_ids: Union[int, List[int]]) -> str:
     """
-    Mark a driver as unavailable (sick, broken vehicle, stuck in traffic).
-    This removes them from the fleet and triggers replanning.
-    All their remaining stops will be redistributed to other drivers.
+    Mark one or more drivers as unavailable (sick, broken vehicle, etc.).
+    This removes them from the fleet and triggers a single replanning cycle.
+    Use this to handle multiple driver issues at once for better efficiency.
     
     Args:
-        driver_id: The integer ID of the driver (0-indexed)
+        driver_ids: A single integer ID or a list of integer IDs of the drivers.
     """
+    if isinstance(driver_ids, int):
+        payload = {"type": "driver_unavailable", "driver_id": driver_ids}
+        d_label = f"Driver {driver_ids}"
+    else:
+        payload = {"type": "driver_unavailable", "driver_ids": driver_ids}
+        d_label = f"Drivers {driver_ids}"
+
     try:
-        resp = httpx.post(f"{BASE_URL}/routes/replan", json={
-            "type": "driver_unavailable",
-            "driver_id": driver_id
-        }, timeout=10.0)
+        resp = httpx.post(
+            f"{BASE_URL}/routes/replan", 
+            json=payload, 
+            timeout=60.0
+        )
         result = resp.json()
         if result.get("status") == "SUCCESS":
-            return f"✓ Driver {driver_id} removed. Routes replanned. New total distance: {result['total_distance']/1000:.1f}km"
-        return "✗ Replanning failed — check server logs."
+            return f"✓ {d_label} removed. Routes replanned. New total distance: {result['total_distance']/1000:.1f}km"
+        return "✗ Replanning failed — server encountered an optimization error."
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -65,7 +74,7 @@ def block_road_segment(from_stop_id: int, to_stop_id: int) -> str:
         resp = httpx.post(f"{BASE_URL}/routes/replan", json={
             "type": "road_blocked",
             "blocked_edge": [from_stop_id, to_stop_id]
-        }, timeout=10.0)
+        }, timeout=30.0)
         result = resp.json()
         if result.get("status") == "SUCCESS":
             return f"✓ Road {from_stop_id}→{to_stop_id} blocked. Routes updated. New distance: {result['total_distance']/1000:.1f}km"

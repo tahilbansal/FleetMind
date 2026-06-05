@@ -2,7 +2,7 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
-from agent.tools import get_current_routes, mark_driver_unavailable, block_road_segment, get_stop_info
+from agent.tools import get_current_routes, mark_drivers_unavailable, block_road_segment, get_stop_info
 import os
 
 class DispatcherAgent:
@@ -11,16 +11,16 @@ class DispatcherAgent:
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not set in .env")
         
-        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=api_key)
+        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=api_key)
         self.tools = {
             "get_current_routes": get_current_routes,
-            "mark_driver_unavailable": mark_driver_unavailable,
+            "mark_drivers_unavailable": mark_drivers_unavailable,
             "block_road_segment": block_road_segment,
             "get_stop_info": get_stop_info,
         }
         self.llm_with_tools = self.llm.bind_tools([
             get_current_routes, 
-            mark_driver_unavailable, 
+            mark_drivers_unavailable, 
             block_road_segment, 
             get_stop_info
         ])
@@ -34,12 +34,9 @@ class DispatcherAgent:
         
         while iteration < max_iterations:
             iteration += 1
-            print(f"\n[Agent Iteration {iteration}]")
             
             response = self.llm_with_tools.invoke(messages)
-            print(f"Response type: {type(response)}")
-            print(f"Response content: {response.content if hasattr(response, 'content') else 'N/A'}")
-            print(f"Tool calls present: {hasattr(response, 'tool_calls') and len(response.tool_calls) > 0}")
+            # Ensure the agent has time to process between potentially heavy tool calls
             
             messages.append(response)
             

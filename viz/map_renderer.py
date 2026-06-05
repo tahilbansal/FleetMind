@@ -1,5 +1,7 @@
 # viz/map_renderer.py
 import folium
+import requests
+import os
 from folium import plugins
 from solver.data_model import RouteState
 
@@ -9,11 +11,28 @@ ROUTE_COLORS = [
     "darkred", "lightred", "darkblue", "darkgreen", "cadetblue"
 ]
 
+def get_route_geometry(coordinates, api_key):
+    """Fetches real road path for a sequence of coordinates from OpenRouteService."""
+    if not coordinates or len(coordinates) < 2:
+        return None
+    url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
+    body = {"coordinates": coordinates}
+    headers = {"Authorization": api_key, "Content-Type": "application/json"}
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=10.0)
+        if resp.status_code == 200:
+            return resp.json()["features"][0]["geometry"]["coordinates"]
+    except Exception:
+        pass
+    return None
+
 def render_route_map(state: RouteState, solution: dict) -> str:
     """
     Renders all vehicle routes on an interactive Folium map.
     Returns HTML string for embedding or saving.
     """
+    api_key = os.getenv("ORS_API_KEY")
+
     # Center map on depot
     depot = state.stops[state.depot_id]
     m = folium.Map(location=[depot.lat, depot.lon], zoom_start=12)
@@ -56,15 +75,38 @@ def render_route_map(state: RouteState, solution: dict) -> str:
                     tooltip=f"Driver {vehicle_id} — {stop.name}"
                 ).add_to(m)
         
-        # Draw route line (including depot connections)
-        if len(route_coords) > 1:
-            folium.PolyLine(
-                locations=route_coords,
-                color=color,
-                weight=3,
-                opacity=0.8,
-                tooltip=f"Driver {vehicle_id} — {route_data['distance']:.0f}m"
-            ).add_to(m)
+        # Draw route line
+        if len(stops_in_route) > 1:
+            if api_key:
+                # Real road routing using OpenRouteService (one call per vehicle)
+                ors_coords = [[state.stops[idx].lon, state.stops[idx].lat] for idx in stops_in_route]
+                geometry = get_route_geometry(ors_coords, api_key)
+                
+                if geometry:
+                    # ORS returns [lon, lat] — Folium needs [lat, lon]
+                    folium_coords = [[c[1], c[0]] for c in geometry]
+                    folium.PolyLine(
+                        locations=folium_coords,
+                        color=color, weight=4,
+                        opacity=0.85, smooth_factor=1,
+                        tooltip=f"Driver {vehicle_id}"
+                    ).add_to(m)
+                else:
+                    # Fallback to straight lines if API call fails
+                    folium.PolyLine(
+                        locations=route_coords,
+                        color=color, weight=3,
+                        opacity=0.8,
+                        tooltip=f"Driver {vehicle_id} (fallback)"
+                    ).add_to(m)
+            else:
+                # Fallback to straight lines if API key is missing
+                folium.PolyLine(
+                    locations=route_coords,
+                    color=color, weight=3,
+                    opacity=0.8,
+                    tooltip=f"Driver {vehicle_id} — {route_data['distance']:.0f}m"
+                ).add_to(m)
 
     # Add distance summary in bottom-right
     total_km = solution["total_distance"] / 1000

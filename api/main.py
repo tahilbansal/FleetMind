@@ -3,6 +3,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 from solver.data_model import RouteState, Stop, build_distance_matrix
 from solver.vrp_solver import solve_vrp
 
@@ -16,7 +21,7 @@ current_state: Optional[RouteState] = None
 current_solution: Optional[dict] = None
 
 @app.post("/routes/initialize")
-async def initialize_routes(state: RouteState):
+def initialize_routes(state: RouteState):
     """Set up the initial route state and solve."""
     global current_state, current_solution
     current_state = state
@@ -29,11 +34,11 @@ async def initialize_routes(state: RouteState):
         demands=[s.demand for s in state.stops],
         vehicle_capacities=state.vehicle_capacities,
     )
-    current_solution = result
-    return result
+    current_solution = {**result, "status": "SUCCESS"}
+    return current_solution
 
 @app.post("/routes/replan")
-async def replan_routes(disruption: dict):
+def replan_routes(disruption: dict):
     """
     Accepts a structured disruption event and replans.
     disruption = {
@@ -50,8 +55,13 @@ async def replan_routes(disruption: dict):
     
     # Apply disruption to state
     if disruption.get("type") == "driver_unavailable":
-        driver_id = disruption["driver_id"]
-        current_state.unavailable_drivers.append(driver_id)
+        # Support both single ID and multiple IDs
+        ids = disruption.get("driver_ids", [])
+        if "driver_id" in disruption:
+            ids.append(disruption["driver_id"])
+        for d_id in ids:
+            if d_id not in current_state.unavailable_drivers:
+                current_state.unavailable_drivers.append(d_id)
     
     if disruption.get("type") == "road_blocked":
         edge = tuple(disruption["blocked_edge"])
@@ -76,15 +86,15 @@ async def replan_routes(disruption: dict):
         demands=[s.demand for s in current_state.stops],
         vehicle_capacities=capacities,
     )
-    current_solution = result
-    return result
+    current_solution = {**result, "status": "SUCCESS"}
+    return current_solution
 
 @app.get("/routes/current")
-async def get_current_routes():
+def get_current_routes():
     return {"state": current_state, "solution": current_solution}
 
 @app.get("/routes/map")
-async def get_map():
+def get_map():
     """Returns HTML of the Folium map for the current solution."""
     from viz.map_renderer import render_route_map
     if not current_state or not current_solution:

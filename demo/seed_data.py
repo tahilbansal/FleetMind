@@ -13,12 +13,17 @@ DALLAS_STOPS = [
     {"id": 8, "name": "Costco — Lewisville", "lat": 33.0462, "lon": -97.0641, "demand": 35},
     {"id": 9, "name": "Office Depot — Richardson", "lat": 32.9483, "lon": -96.7299, "demand": 12},
     {"id": 10, "name": "Walgreens — Grand Prairie", "lat": 32.7460, "lon": -97.0147, "demand": 8},
+    {"id": 11, "name": "Tribeca Loft", "lat": 40.718, "lon": -74.008, "demand": 1},
+    {"id": 12, "name": "Soho Boutique", "lat": 40.724, "lon": -74.000, "demand": 2},
+    {"id": 13, "name": "Williamsburg Distribution", "lat": 40.716, "lon": -73.959, "demand": 4},
+    {"id": 14, "name": "Dumbo Art Gallery", "lat": 40.703, "lon": -73.990, "demand": 3},
+    {"id": 15, "name": "Brooklyn Heights Library", "lat": 40.696, "lon": -73.993, "demand": 2},
 ]
 
 state = {
     "stops": DALLAS_STOPS,
-    "num_vehicles": 3,
-    "vehicle_capacities": [80, 80, 80],
+    "num_vehicles": 4,
+    "vehicle_capacities": [100, 100, 100, 100],
     "depot_id": 0,
 }
 
