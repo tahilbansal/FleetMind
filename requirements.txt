@@ -12,3 +12,5 @@ numpy
 streamlit
 folium
 requests
+pandas
+plotly

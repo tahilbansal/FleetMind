@@ -3,6 +3,8 @@ import streamlit as st
 import httpx
 import sys, os
 from dotenv import load_dotenv
+import pandas as pd
+import plotly.express as px
 
 # Load environment variables FIRST
 load_dotenv()
@@ -12,7 +14,7 @@ from agent.dispatcher_agent import build_dispatcher_agent
 
 # --- UI Configuration ---
 st.set_page_config(
-    page_title="FleetMind | AI Dispatcher",
+    page_title="FleetMind",
     page_icon="🚛",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -36,8 +38,14 @@ st.markdown("""
 
 if "initialized" not in st.session_state:
     st.session_state.initialized = False
+if "current_state" not in st.session_state:
+    st.session_state.current_state = None
 if "current_solution" not in st.session_state:
     st.session_state.current_solution = None
+if "map_html" not in st.session_state:
+    st.session_state.map_html = None
+if "prev_map_html" not in st.session_state:
+    st.session_state.prev_map_html = None
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "agent" not in st.session_state:
@@ -49,6 +57,15 @@ def fetch_current_state():
         if resp.status_code == 200:
             data = resp.json()
             st.session_state.current_solution = data.get("solution")
+            st.session_state.current_state = data.get("state")
+            
+            # Update Map, preserving previous for comparison
+            map_resp = httpx.get("http://localhost:8000/routes/map", timeout=30.0)
+            if map_resp.status_code == 200:
+                new_map = map_resp.json().get("html", "")
+                if st.session_state.map_html and st.session_state.map_html != new_map:
+                    st.session_state.prev_map_html = st.session_state.map_html
+                st.session_state.map_html = new_map
             return data
     except Exception:
         pass
@@ -56,17 +73,32 @@ def fetch_current_state():
 
 # --- Sidebar ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2830/2830305.png", width=80)
-    st.title("FleetMind AI")
+    st.image("https://cdn-icons-png.flaticon.com/512/2830/2830305.png", width=140)
+    st.title("FleetMind")
     st.markdown("---")
-    st.subheader("System Control")
+    
+    st.subheader("Fleet Status")
+    if st.session_state.current_state and st.session_state.current_solution:
+        state = st.session_state.current_state
+        sol = st.session_state.current_solution
+        unavailable = state.get("unavailable_drivers", [])
+        for vid in range(state["num_vehicles"]):
+            active = vid not in unavailable
+            status_color = "🟢" if active else "🔴"
+            # Calculate remaining stops (excluding depot start/end)
+            route = sol["routes"].get(str(vid), {})
+            stops_remaining = max(0, len(route.get("stops", [])) - 2) if active else 0
+            st.markdown(f"{status_color} **Driver {vid}** — {stops_remaining} stops")
+    else:
+        st.caption("Waiting for initialization...")
+
+    st.markdown("---")
     if st.button("🔄 Reset & Re-initialize", use_container_width=True):
         st.session_state.initialized = False
         st.session_state.messages = []
+        st.session_state.prev_map_html = None
+        st.session_state.map_html = None
         st.rerun()
-    
-    st.markdown("---")
-    st.info("Dispatcher AI is active and monitoring road conditions & driver availability.")
 
 # --- Auto-Initialization Logic ---
 if not st.session_state.initialized:
@@ -93,68 +125,108 @@ if st.session_state.current_solution:
     m3.metric("Fleet Distance", f"{sol['total_distance']/1000:.1f} km")
     m4.metric("Status", "Optimized", delta="Ready")
 
-st.divider()
-
 # --- Main Content ---
-col1, col2 = st.columns([3, 1.5])
+tab_routes, tab_ops, tab_analytics, tab_history = st.tabs([
+    "🗺️ Live Routes", 
+    "💬 Dispatcher", 
+    "📊 Analytics", 
+    "📋 Route History"
+])
 
-tab_ops, tab_history = st.tabs(["🚀 Live Operations", "📜 Operational History"])
+with tab_routes:
+    st.subheader("🗺️ Live Route Visualization")
+    if st.session_state.map_html:
+        if st.session_state.prev_map_html:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.caption("Previous Route Plan")
+                st.components.v1.html(st.session_state.prev_map_html, height=600)
+            with c2:
+                st.caption("Updated Optimization")
+                st.components.v1.html(st.session_state.map_html, height=600)
+        else:
+            st.components.v1.html(st.session_state.map_html, height=600)
+    else:
+        st.info("Initializing map...")
 
 with tab_ops:
-    col1, col2 = st.columns([3, 1.5])
-    with col1:
-        st.subheader("📍 Fleet Operations Map")
-        try:
-            map_resp = httpx.get("http://localhost:8000/routes/map", timeout=30.0)
-            if map_resp.status_code == 200:
-                html = map_resp.json().get("html", "")
-                st.components.v1.html(html, height=600)
-        except Exception as e:
-            st.warning(f"Map temporarily unavailable")
+    st.subheader("💬 AI Dispatcher Terminal")
+    chat_container = st.container(height=550)
+    with chat_container:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+                if msg.get("reasoning"):
+                    with st.expander("🕵️ Agent reasoning"):
+                        for step in msg["reasoning"]:
+                            st.caption(step)
+    
+    user_input = st.chat_input("Message the dispatcher (e.g., 'Driver 0 is sick')")
+    if user_input:
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.spinner("🤖 Analyzing & Replanning..."):
+            try:
+                result = st.session_state.agent.invoke({"input": user_input})
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": result.get("output", ""),
+                    "reasoning": result.get("reasoning", [])
+                })
+                fetch_current_state()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Agent error: {e}")
 
-    with col2:
-        st.subheader("💬 AI Dispatcher")
-        chat_container = st.container(height=500)
-        with chat_container:
-            for msg in st.session_state.messages:
-                with st.chat_message(msg["role"]):
-                    st.write(msg["content"])
+with tab_analytics:
+    st.subheader("📊 Fleet Performance Analytics")
+    if st.session_state.current_solution:
+        sol = st.session_state.current_solution
         
-        user_input = st.chat_input("Inform dispatcher of disruptions...")
-        if user_input:
-            st.session_state.messages.append({"role": "user", "content": user_input})
-            with st.spinner("🤖 Analyzing & Replanning..."):
-                try:
-                    result = st.session_state.agent.invoke({"input": user_input})
-                    response = result.get("output", "Processing complete.")
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                    fetch_current_state()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Agent error: {e}")
+        # Prepare data for Plotly
+        driver_data = []
+        for vid, route in sol["routes"].items():
+            driver_data.append({
+                "Driver": f"Driver {vid}",
+                "Distance (km)": route["distance"] / 1000,
+                "Stops": len(route["stops"]) - 2
+            })
+        df_drivers = pd.DataFrame(driver_data)
+
+        ca, cb = st.columns(2)
+        with ca:
+            fig1 = px.bar(df_drivers, x="Driver", y="Distance (km)", title="Distance per Driver", color="Driver")
+            st.plotly_chart(fig1, use_container_width=True)
+        with cb:
+            fig2 = px.bar(df_drivers, x="Driver", y="Stops", title="Stops per Driver", color="Driver")
+            st.plotly_chart(fig2, use_container_width=True)
+            
+        # Line chart for solve time history
+        try:
+            hist_resp = httpx.get("http://localhost:8000/history")
+            if hist_resp.status_code == 200:
+                hist_data = hist_resp.json()
+                if hist_data["plans"]:
+                    df_hist = pd.DataFrame(hist_data["plans"])
+                    fig3 = px.line(df_hist, x="created_at", y="solve_time_ms", title="Optimization Performance (ms)")
+                    st.plotly_chart(fig3, use_container_width=True)
+        except:
+            pass
 
 with tab_history:
-    st.subheader("Optimization & Disruption Logs")
+    st.subheader("📜 Operational Audit Trail")
     try:
         hist_resp = httpx.get("http://localhost:8000/history")
         if hist_resp.status_code == 200:
             data = hist_resp.json()
-            
             st.write("### Recent Disruptions")
             if data["disruptions"]:
-                st.table(data["disruptions"])
+                st.dataframe(pd.DataFrame(data["disruptions"]), use_container_width=True)
             else:
                 st.info("No disruptions recorded yet.")
-                
-            st.write("### Route Plan Performance")
+            
+            st.write("### Route Plan History")
             if data["plans"]:
-                plan_data = [{
-                    "Time": p["created_at"],
-                    "Vehicles": p["num_vehicles"],
-                    "Distance (km)": f"{p['total_distance_km']:.2f}",
-                    "Solve Time (ms)": f"{p['solve_time_ms']:.1f}"
-                } for p in data["plans"]]
-                st.dataframe(plan_data, use_container_width=True)
+                st.dataframe(pd.DataFrame(data["plans"]), use_container_width=True)
     except Exception as e:
         st.error("Could not load history.")
 

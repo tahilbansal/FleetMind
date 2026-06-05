@@ -46,6 +46,7 @@ class DispatcherAgent:
         
         max_iterations = 10
         iteration = 0
+        reasoning = []
         
         while iteration < max_iterations:
             iteration += 1
@@ -58,7 +59,7 @@ class DispatcherAgent:
             if not hasattr(response, 'tool_calls') or not response.tool_calls:
                 final_text = self._get_clean_text(response)
                 print(f"[Agent] Final response: {final_text}")
-                return {"output": final_text}
+                return {"output": final_text, "reasoning": reasoning}
             
             tool_results_added = False
             for tool_call in response.tool_calls:
@@ -66,6 +67,7 @@ class DispatcherAgent:
                 tool_args = tool_call.get("args", {})
                 tool_id = tool_call.get("id")
                 
+                reasoning.append(f"Calling tool: {tool_name}({tool_args})")
                 print(f"  Calling: {tool_name}({tool_args})")
                 
                 if tool_name not in self.tools:
@@ -86,15 +88,17 @@ class DispatcherAgent:
                     result = f"Error: {str(e)}"
                     print(f"  ✗ {result}")
                 
+                reasoning.append(f"Tool result: {str(result)}")
+                
                 messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
                 tool_results_added = True
             
             if not tool_results_added:
                 print("[Agent] No tools were called. Breaking to avoid infinite loop.")
                 final_text = self._get_clean_text(response)
-                return {"output": final_text}
+                return {"output": final_text, "reasoning": reasoning}
         
-        return {"output": f"Max iterations ({max_iterations}) reached without final response"}
+        return {"output": f"Max iterations ({max_iterations}) reached without final response", "reasoning": reasoning}
 
 def build_dispatcher_agent():
     return DispatcherAgent()
