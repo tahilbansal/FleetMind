@@ -1,2 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+venv/
 .env
-venv
+
+# Databases
+*.db
+fleetmind.db
