@@ -119,14 +119,37 @@ with col2:
                         {"role": "assistant", "content": response}
                     )
                 except Exception as e:
-                    st.error(f"Error: {str(e)}")
-                    response = f"Error processing request: {str(e)}"
+                    error_msg = f"Error: {str(e)}"
+                    st.error(error_msg)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": error_msg}
+                    )
         
-        # Auto-refresh map after replanning
+        # Force refresh of routes and map after any agent action
+        st.divider()
+        st.subheader("📍 Updated Routes")
         try:
-            resp = httpx.get("http://localhost:8000/routes/map", timeout=10.0)
-            html = resp.json().get("html", "")
-            if html:
-                st.components.v1.html(html, height=500, scrolling=True)
+            resp = httpx.get("http://localhost:8000/routes/current", timeout=5.0)
+            data = resp.json()
+            sol = data.get("solution", {})
+            
+            if sol and sol.get("routes"):
+                # Show route summary
+                cols = st.columns(len(sol["routes"]))
+                for idx, (vid, route) in enumerate(sol["routes"].items()):
+                    with cols[idx]:
+                        stops_count = len(route['stops']) - 2  # Exclude depot start/end
+                        distance_km = route['distance'] / 1000
+                        st.metric(
+                            f"Driver {vid}",
+                            f"{stops_count} stops",
+                            f"{distance_km:.1f}km"
+                        )
+                        
+                # Show map
+                resp = httpx.get("http://localhost:8000/routes/map", timeout=10.0)
+                html = resp.json().get("html", "")
+                if html:
+                    st.components.v1.html(html, height=500, scrolling=True)
         except Exception as e:
-            st.warning(f"Could not update map: {e}")
+            st.warning(f"Could not refresh: {e}")
