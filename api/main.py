@@ -19,6 +19,26 @@ from .db import models  # Importing the models package registers them with Base
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
 
+COST_CONFIG = {
+    "fuel_cost_per_km": 8.5,      # ₹ per km
+    "avg_speed_kmh": 30,          # Estimated avg speed in city
+    "driver_cost_per_hour": 150,   # ₹ per hour
+    "vehicle_fixed_cost_per_day": 500,  # ₹ depreciation etc
+}
+
+def calculate_costs(total_distance_m, num_vehicles):
+    dist_km = total_distance_m / 1000.0
+    fuel_cost = dist_km * COST_CONFIG["fuel_cost_per_km"]
+    
+    # Est. time: distance / speed
+    hours = dist_km / COST_CONFIG["avg_speed_kmh"]
+    driver_cost = hours * COST_CONFIG["driver_cost_per_hour"]
+    
+    fixed_cost = num_vehicles * COST_CONFIG["vehicle_fixed_cost_per_day"]
+    
+    total = fuel_cost + driver_cost + fixed_cost
+    return round(total, 2)
+
 app = FastAPI(title="VRP Dispatch API")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -33,7 +53,8 @@ def seed_fleet_config():
         if not default_exists:
             sample_state = {
                 "stops": [
-                    {"id": 0, "name": "Manhattan Logistics Center", "lat": 40.735, "lon": -74.006, "demand": 0},
+                    {"id": 0, "name": "Warehouse North (Main)", "lat": 40.735, "lon": -74.006, "demand": 0},
+                    {"id": 10, "name": "Warehouse South (Secondary)", "lat": 40.707, "lon": -74.011, "demand": 0},
                     {"id": 1, "name": "Hell's Kitchen Delivery", "lat": 40.763, "lon": -73.992, "demand": 2},
                     {"id": 2, "name": "UWS Apartments", "lat": 40.783, "lon": -73.980, "demand": 1},
                     {"id": 3, "name": "UES Medical Center", "lat": 40.773, "lon": -73.956, "demand": 3},
@@ -46,7 +67,7 @@ def seed_fleet_config():
                 ],
                 "num_vehicles": 4,
                 "vehicle_capacities": [10, 10, 10, 10],
-                "depot_id": 0
+                "depot_ids": [0, 0, 1, 1] # 2 vehicles per depot (indices 0 and 1)
             }
             db.add(models.FleetConfig(name="default", config=sample_state))
             db.commit()
@@ -62,21 +83,23 @@ def initialize_routes(state: RouteState, db: Session = Depends(get_db)):
     matrix = build_distance_matrix(state.stops)
     
     start_time = time.time()
+    depots = state.depot_ids if state.depot_ids else [0] * state.num_vehicles
     result = solve_vrp(
         distance_matrix=matrix,
         num_vehicles=state.num_vehicles,
-        depot=state.depot_id,
+        depots=depots,
         demands=[s.demand for s in state.stops],
         vehicle_capacities=state.vehicle_capacities,
     )
     solve_time_ms = (time.time() - start_time) * 1000
+    cost = calculate_costs(result.get("total_distance", 0), state.num_vehicles)
 
     new_plan = models.RoutePlan(
         num_vehicles=state.num_vehicles,
         num_stops=len(state.stops),
         total_distance_km=result.get("total_distance", 0) / 1000.0,
         solve_time_ms=solve_time_ms,
-        routes=result,
+        routes={**result, "cost": cost},
         state=state.dict()
     )
     db.add(new_plan)
@@ -127,15 +150,17 @@ def replan_routes(disruption: dict, db: Session = Depends(get_db)):
     for d in current_state.unavailable_drivers:
         capacities[d] = 0
     
+    depots = current_state.depot_ids if current_state.depot_ids else [0] * current_state.num_vehicles
     start_time = time.time()
     result = solve_vrp(
         distance_matrix=matrix,
         num_vehicles=current_state.num_vehicles,
-        depot=current_state.depot_id,
+        depots=depots,
         demands=[s.demand for s in current_state.stops],
         vehicle_capacities=capacities,
     )
     solve_time_ms = (time.time() - start_time) * 1000
+    cost = calculate_costs(result.get("total_distance", 0), current_state.num_vehicles)
 
     # Log Disruption
     dist_before = prev_plan.total_distance_km
@@ -156,13 +181,13 @@ def replan_routes(disruption: dict, db: Session = Depends(get_db)):
         num_stops=len(current_state.stops),
         total_distance_km=dist_after,
         solve_time_ms=solve_time_ms,
-        routes=result,
+        routes={**result, "cost": cost},
         state=current_state.dict()
     )
     db.add(new_plan)
     db.commit()
     
-    return {**result, "status": "SUCCESS"}
+    return {**result, "cost": cost, "status": "SUCCESS"}
 
 @app.get("/routes/current")
 def get_current_routes(db: Session = Depends(get_db)):

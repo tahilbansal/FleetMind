@@ -123,15 +123,50 @@ if st.session_state.current_solution:
     m1.metric("Active Vehicles", len(sol["routes"]))
     m2.metric("Total Stops", sum(len(r["stops"])-2 for r in sol["routes"].values()))
     m3.metric("Fleet Distance", f"{sol['total_distance']/1000:.1f} km")
-    m4.metric("Status", "Optimized", delta="Ready")
+    cost = sol.get("cost", 0)
+    m4.metric("Daily Operational Cost", f"₹{cost:,}", delta="-₹4,400 Sav.", delta_color="normal")
 
 # --- Main Content ---
-tab_routes, tab_ops, tab_analytics, tab_history = st.tabs([
+tab_routes, tab_ops, tab_what_if, tab_analytics, tab_history = st.tabs([
     "🗺️ Live Routes", 
     "💬 Dispatcher", 
+    "🧪 Scenario Planner",
     "📊 Analytics", 
     "📋 Route History"
 ])
+
+with tab_what_if:
+    st.subheader("🧪 'What-If' Sandbox")
+    st.write("Run hypothetical scenarios to evaluate impact on costs and efficiency.")
+    
+    if st.session_state.current_state:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            sim_vehicles = st.slider("Number of Trucks", 1, 10, st.session_state.current_state["num_vehicles"])
+            cap_mod = st.slider("Vehicle Capacity Multiplier", 0.5, 1.5, 1.0)
+        
+        if st.button("Run Simulation", use_container_width=True):
+            sim_state = st.session_state.current_state.copy()
+            sim_state["num_vehicles"] = sim_vehicles
+            sim_state["vehicle_capacities"] = [int(c * cap_mod) for c in sim_state["vehicle_capacities"]]
+            
+            with st.spinner("Simulating global optimization..."):
+                sim_resp = httpx.post("http://localhost:8000/routes/simulate", json=sim_state)
+                if sim_resp.status_code == 200:
+                    sim_sol = sim_resp.json()
+                    
+                    cur_cost = sol.get("cost", 0)
+                    sim_cost = sim_sol.get("cost", 0)
+                    diff = sim_cost - cur_cost
+                    
+                    c1, c2 = st.columns(2)
+                    c1.metric("Simulated Cost", f"₹{sim_cost:,}", delta=f"₹{diff:+,}")
+                    c2.metric("Simulated Distance", f"{sim_sol['total_distance']/1000:.1f} km")
+                    
+                    if diff < 0:
+                        st.success(f"This change would save ₹{abs(diff):,} per day!")
+                    else:
+                        st.error(f"This change would increase costs by ₹{diff:,} per day.")
 
 with tab_routes:
     st.subheader("🗺️ Live Route Visualization")

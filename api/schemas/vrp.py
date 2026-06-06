@@ -13,7 +13,7 @@ class RouteState(BaseModel):
     stops: List[Stop]
     num_vehicles: int
     vehicle_capacities: List[int]
-    depot_id: int = 0
+    depot_ids: List[int] = []  # Length must match num_vehicles
     # Tracks which stops are assigned to which drivers
     assignments: Dict[int, List[int]] = {}  # {driver_id: [stop_ids]}
     # Drivers marked as unavailable

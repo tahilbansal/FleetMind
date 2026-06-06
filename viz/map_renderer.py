@@ -33,19 +33,32 @@ def render_route_map(state: RouteState, solution: dict) -> str:
     """
     api_key = os.getenv("ORS_API_KEY")
 
-    # Center map on depot
-    depot = state.stops[state.depot_id]
-    m = folium.Map(location=[depot.lat, depot.lon], zoom_start=12)
+    # Ensure we get depot indices correctly from the state
+    if hasattr(state, 'depot_ids') and state.depot_ids:
+        depot_indices = state.depot_ids
+    else:
+        # Fallback for legacy data/single depot
+        depot_indices = [0] * state.num_vehicles
+        
+    unique_depot_indices = sorted(list(set(depot_indices)))
+    
+    # Center map on the first identified depot
+    main_depot = state.stops[unique_depot_indices[0]]
+    m = folium.Map(location=[main_depot.lat, main_depot.lon], zoom_start=13)
 
-    # Add depot marker
-    folium.Marker(
-        location=[depot.lat, depot.lon],
-        popup="<b>DEPOT</b>",
-        icon=folium.Icon(color="black", icon="home")
-    ).add_to(m)
+    # Add markers for all unique depots with a distinct style
+    for d_idx in unique_depot_indices:
+        d_stop = state.stops[d_idx]
+        folium.Marker(
+            location=[d_stop.lat, d_stop.lon],
+            popup=f"<b>WAREHOUSE HUB</b><br>ID: {d_stop.id}<br>Name: {d_stop.name}",
+            icon=folium.Icon(color="black", icon="home")
+        ).add_to(m)
 
     # Track all coordinates for bounds
-    all_coords = [[depot.lat, depot.lon]]
+    all_coords = []
+    for d_idx in unique_depot_indices:
+        all_coords.append([state.stops[d_idx].lat, state.stops[d_idx].lon])
 
     # Draw each vehicle's route
     for vehicle_id, route_data in solution["routes"].items():
@@ -59,7 +72,7 @@ def render_route_map(state: RouteState, solution: dict) -> str:
             all_coords.append([stop.lat, stop.lon])
             
             # Add stop marker (skip depot marker since already added)
-            if stop_idx != state.depot_id:
+            if stop_idx not in unique_depot_indices:
                 folium.CircleMarker(
                     location=[stop.lat, stop.lon],
                     radius=8,
@@ -111,7 +124,7 @@ def render_route_map(state: RouteState, solution: dict) -> str:
     # Add distance summary in bottom-right
     total_km = solution["total_distance"] / 1000
     folium.map.Marker(
-        [depot.lat - 0.05, depot.lon + 0.05],
+        [main_depot.lat - 0.05, main_depot.lon + 0.05],
         icon=folium.DivIcon(html=f"""
             <div style="background:white;padding:8px;border-radius:4px;
                         border:1px solid #ccc;font-size:12px;">

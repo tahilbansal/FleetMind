@@ -5,7 +5,7 @@ from typing import List, Optional
 def solve_vrp(
     distance_matrix: List[List[int]],
     num_vehicles: int,
-    depot: int,
+    depots: List[int],  # List of depot indices per vehicle
     demands: List[int],
     vehicle_capacities: List[int],
     locked_routes: Optional[dict] = None  # {vehicle_id: [stop_indices]}
@@ -18,7 +18,7 @@ def solve_vrp(
     data = {
         "distance_matrix": distance_matrix,
         "num_vehicles": num_vehicles,
-        "depot": depot,
+        "depots": depots,
         "demands": demands,
         "vehicle_capacities": vehicle_capacities,
     }
@@ -26,7 +26,8 @@ def solve_vrp(
     manager = pywrapcp.RoutingIndexManager(
         len(data["distance_matrix"]),
         data["num_vehicles"],
-        data["depot"]
+        data["depots"], # Starts
+        data["depots"]  # Ends (vehicles return to their own depot)
     )
     routing = pywrapcp.RoutingModel(manager)
 
