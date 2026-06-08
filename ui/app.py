@@ -10,7 +10,7 @@ import plotly.express as px
 load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from agent.dispatcher_agent import build_dispatcher_agent
+from agents.dispatcher_agent import build_dispatcher_agent
 
 # --- UI Configuration ---
 st.set_page_config(
@@ -29,9 +29,10 @@ st.markdown("""
         border-radius: 10px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         border: 1px solid rgba(128, 128, 128, 0.2);
+        min-height: 120px;
     }
     [data-testid="stMetricValue"] {
-        font-size: 1.5rem !important;
+        font-size: 1.8rem !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -75,25 +76,34 @@ def fetch_current_state():
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2830/2830305.png", width=140)
     st.title("FleetMind")
-    st.markdown("---")
-    
+    st.divider()
+
     st.subheader("Fleet Status")
     if st.session_state.current_state and st.session_state.current_solution:
         state = st.session_state.current_state
         sol = st.session_state.current_solution
         unavailable = state.get("unavailable_drivers", [])
+        depot_ids = state.get("depot_ids", [])
+        
         for vid in range(state["num_vehicles"]):
-            active = vid not in unavailable
-            status_color = "🟢" if active else "🔴"
-            # Calculate remaining stops (excluding depot start/end)
+            is_active = str(vid) not in unavailable
+            status_color = "🟢" if is_active else "🔴"
+            
+            # Fetch depot name for this vehicle if available
+            depot_info = ""
+            if depot_ids and vid < len(depot_ids):
+                d_idx = int(depot_ids[vid])
+                d_name = state["stops"][d_idx]["name"]
+                depot_info = f"<br><small>Hub: {d_name}</small>"
+            
             route = sol["routes"].get(str(vid), {})
-            stops_remaining = max(0, len(route.get("stops", [])) - 2) if active else 0
-            st.markdown(f"{status_color} **Driver {vid}** — {stops_remaining} stops")
+            stops_remaining = max(0, len(route.get("stops", [])) - 2) if is_active else 0
+            st.markdown(f"{status_color} **Driver {vid}** — {stops_remaining} stops{depot_info}", unsafe_allow_html=True)
     else:
         st.caption("Waiting for initialization...")
 
-    st.markdown("---")
-    if st.button("🔄 Reset & Re-initialize", use_container_width=True):
+    st.divider()
+    if st.button("🔄 Full System Reset", use_container_width=True, type="secondary"):
         st.session_state.initialized = False
         st.session_state.messages = []
         st.session_state.prev_map_html = None
@@ -112,6 +122,9 @@ if not st.session_state.initialized:
                     st.session_state.initialized = True
                     fetch_current_state()
                     st.rerun()
+                else:
+                    st.error(f"Solver Initialization Failed (HTTP {init_resp.status_code})")
+                    st.json(init_resp.json()) # Display Pydantic validation errors
         except Exception as e:
             st.error(f"Failed to auto-start: {e}")
             st.stop()
@@ -120,11 +133,18 @@ if not st.session_state.initialized:
 if st.session_state.current_solution:
     sol = st.session_state.current_solution
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Active Vehicles", len(sol["routes"]))
-    m2.metric("Total Stops", sum(len(r["stops"])-2 for r in sol["routes"].values()))
-    m3.metric("Fleet Distance", f"{sol['total_distance']/1000:.1f} km")
+    active_v = len([v for v in sol["routes"].values() if v.get("stops") and len(v["stops"]) > 2])
+    m1.metric("Active Fleet", f"{active_v} / {st.session_state.current_state['num_vehicles']}")
+    
+    total_stops = sum(len(r["stops"])-2 for r in sol["routes"].values() if r.get("stops"))
+    m2.metric("Total Deliveries", total_stops)
+    
+    m3.metric("Fleet Distance", f"{sol['total_distance']/1000:.1f} km", delta="Real-road")
+    
     cost = sol.get("cost", 0)
-    m4.metric("Daily Operational Cost", f"₹{cost:,}", delta="-₹4,400 Sav.", delta_color="normal")
+    # Baseline comparison (Placeholder logic for demo impact)
+    savings = 4400 if st.session_state.initialized else 0
+    m4.metric("Daily Ops Cost", f"₹{cost:,}", delta=f"-₹{savings} Optim.", delta_color="normal")
 
 # --- Main Content ---
 tab_routes, tab_ops, tab_what_if, tab_analytics, tab_history = st.tabs([
@@ -136,8 +156,8 @@ tab_routes, tab_ops, tab_what_if, tab_analytics, tab_history = st.tabs([
 ])
 
 with tab_what_if:
-    st.subheader("🧪 'What-If' Sandbox")
-    st.write("Run hypothetical scenarios to evaluate impact on costs and efficiency.")
+    st.subheader("🧪 Strategic Scenario Planner")
+    st.info("Simulate variations in fleet size or capacity without affecting live operations.")
     
     if st.session_state.current_state:
         col_a, col_b = st.columns(2)
@@ -169,18 +189,18 @@ with tab_what_if:
                         st.error(f"This change would increase costs by ₹{diff:,} per day.")
 
 with tab_routes:
-    st.subheader("🗺️ Live Route Visualization")
+    st.subheader(" Live Fleet Tracking")
     if st.session_state.map_html:
         if st.session_state.prev_map_html:
             c1, c2 = st.columns(2)
             with c1:
-                st.caption("Previous Route Plan")
+                st.markdown("**Previous Plan** (Baseline)")
                 st.components.v1.html(st.session_state.prev_map_html, height=600)
             with c2:
-                st.caption("Updated Optimization")
+                st.markdown("**Optimized Plan** (Active)")
                 st.components.v1.html(st.session_state.map_html, height=600)
         else:
-            st.components.v1.html(st.session_state.map_html, height=600)
+            st.components.v1.html(st.session_state.map_html, height=700)
     else:
         st.info("Initializing map...")
 

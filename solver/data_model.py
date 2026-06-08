@@ -1,6 +1,6 @@
 # solver/data_model.py
 from typing import List
-from api.schemas.vrp import Stop, RouteState
+from schemas.vrp import Stop, RouteState
 
 def build_distance_matrix(stops: List[Stop]) -> List[List[int]]:
     """

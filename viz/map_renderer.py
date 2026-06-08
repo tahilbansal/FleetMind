@@ -35,7 +35,7 @@ def render_route_map(state: RouteState, solution: dict) -> str:
 
     # Ensure we get depot indices correctly from the state
     if hasattr(state, 'depot_ids') and state.depot_ids:
-        depot_indices = state.depot_ids
+        depot_indices = [int(d) for d in state.depot_ids]
     else:
         # Fallback for legacy data/single depot
         depot_indices = [0] * state.num_vehicles
@@ -82,7 +82,7 @@ def render_route_map(state: RouteState, solution: dict) -> str:
                     popup=folium.Popup(
                         f"<b>Stop {stop_idx}: {stop.name}</b><br>"
                         f"Driver: {vehicle_id}<br>"
-                        f"Demand: {stop.demand} units",
+                        f"Demand: {stop.demand_kg} kg",
                         max_width=200
                     ),
                     tooltip=f"Driver {vehicle_id} — {stop.name}"

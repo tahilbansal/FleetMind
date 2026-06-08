@@ -1,43 +1,27 @@
 # api/main.py
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
-from dotenv import load_dotenv
-import os, time
 from sqlalchemy.orm import Session
+from dotenv import load_dotenv
+import datetime, time
+from sqlalchemy import inspect
+from services.cost_service import calculate_operational_costs as calculate_costs
 
 load_dotenv()
 
-from .schemas.vrp import RouteState, Stop
+from sqlalchemy.orm.attributes import flag_modified
+from config.seed_data import DEPOTS_TO_SEED, DEFAULT_SAMPLE_STATE
+from config.database import engine, SessionLocal, get_db
+from schemas.vrp import RouteState
 from solver.data_model import build_distance_matrix
 from solver.vrp_solver import solve_vrp
-from .db.session import engine, get_db, SessionLocal
-from .db.base import Base
-from .db import models  # Importing the models package registers them with Base
+from models.base import Base
+from models import FleetConfig
+import models
+from api.routes import history, routes, config
 
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
-
-COST_CONFIG = {
-    "fuel_cost_per_km": 8.5,      # ₹ per km
-    "avg_speed_kmh": 30,          # Estimated avg speed in city
-    "driver_cost_per_hour": 150,   # ₹ per hour
-    "vehicle_fixed_cost_per_day": 500,  # ₹ depreciation etc
-}
-
-def calculate_costs(total_distance_m, num_vehicles):
-    dist_km = total_distance_m / 1000.0
-    fuel_cost = dist_km * COST_CONFIG["fuel_cost_per_km"]
-    
-    # Est. time: distance / speed
-    hours = dist_km / COST_CONFIG["avg_speed_kmh"]
-    driver_cost = hours * COST_CONFIG["driver_cost_per_hour"]
-    
-    fixed_cost = num_vehicles * COST_CONFIG["vehicle_fixed_cost_per_day"]
-    
-    total = fuel_cost + driver_cost + fixed_cost
-    return round(total, 2)
 
 app = FastAPI(title="VRP Dispatch API")
 
@@ -47,35 +31,44 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 @app.on_event("startup")
 def seed_fleet_config():
     """Ensures the database has a default fleet configuration on startup."""
+    inspector = inspect(engine)
+    if not inspector.has_table("fleet_configs") or not inspector.has_table("depots"):
+        return
+
     db = SessionLocal()
     try:
-        default_exists = db.query(models.FleetConfig).filter(models.FleetConfig.name == "default").first()
-        if not default_exists:
-            sample_state = {
-                "stops": [
-                    {"id": 0, "name": "Warehouse North (Main)", "lat": 40.735, "lon": -74.006, "demand": 0},
-                    {"id": 10, "name": "Warehouse South (Secondary)", "lat": 40.707, "lon": -74.011, "demand": 0},
-                    {"id": 1, "name": "Hell's Kitchen Delivery", "lat": 40.763, "lon": -73.992, "demand": 2},
-                    {"id": 2, "name": "UWS Apartments", "lat": 40.783, "lon": -73.980, "demand": 1},
-                    {"id": 3, "name": "UES Medical Center", "lat": 40.773, "lon": -73.956, "demand": 3},
-                    {"id": 4, "name": "Midtown Office Hub", "lat": 40.754, "lon": -73.972, "demand": 2},
-                    {"id": 5, "name": "Chelsea Market Drop-off", "lat": 40.746, "lon": -74.001, "demand": 4},
-                    {"id": 6, "name": "Washington Square Park", "lat": 40.733, "lon": -73.997, "demand": 1},
-                    {"id": 7, "name": "East Village Cafe", "lat": 40.729, "lon": -73.987, "demand": 2},
-                    {"id": 8, "name": "LES Retail Store", "lat": 40.715, "lon": -73.988, "demand": 3},
-                    {"id": 9, "name": "FiDi Tech Office", "lat": 40.707, "lon": -74.011, "demand": 2}
-                ],
-                "num_vehicles": 4,
-                "vehicle_capacities": [10, 10, 10, 10],
-                "depot_ids": [0, 0, 1, 1] # 2 vehicles per depot (indices 0 and 1)
-            }
-            db.add(models.FleetConfig(name="default", config=sample_state))
+        # 1. Seed Depots so Foreign Keys in RoutePlans work
+        for d_id, d_name, lat, lon in DEPOTS_TO_SEED:
+            if not db.query(models.Depot).filter(models.Depot.id == d_id).first():
+                db.add(models.Depot(id=d_id, name=d_name, lat=lat, lon=lon))
+        db.commit()
+
+        # 2. Seed Default Config
+        config_entry = db.query(FleetConfig).filter(FleetConfig.name == "default").first()
+        if not config_entry:
+            db.add(FleetConfig(name="default", config=DEFAULT_SAMPLE_STATE))
             db.commit()
+        else:
+            # Force update if the schema is old (e.g. missing demand_kg or depot_ids)
+            config_data = config_entry.config
+            is_stale = (
+                "depot_ids" not in config_data or 
+                (len(config_data.get("stops", [])) > 0 and "demand_kg" not in config_data["stops"][0]) or
+                config_data.get("num_vehicles") != DEFAULT_SAMPLE_STATE["num_vehicles"]
+            )
+            
+            if is_stale:
+                # We must flag the JSON column as modified so SQLAlchemy detects the change
+                config_entry.config = DEFAULT_SAMPLE_STATE
+                flag_modified(config_entry, "config")
+                db.commit()
+                print("✓ Fleet configuration schema updated in database.")
+
     finally:
         db.close()
 
 def get_latest_plan(db: Session):
-    return db.query(models.RoutePlan).order_by(models.RoutePlan.id.desc()).first()
+    return db.query(models.RoutePlan).order_by(models.RoutePlan.created_at.desc()).first()
 
 @app.post("/routes/initialize")
 def initialize_routes(state: RouteState, db: Session = Depends(get_db)):
@@ -83,24 +76,27 @@ def initialize_routes(state: RouteState, db: Session = Depends(get_db)):
     matrix = build_distance_matrix(state.stops)
     
     start_time = time.time()
-    depots = state.depot_ids if state.depot_ids else [0] * state.num_vehicles
+    depots_indices = [int(d) for d in state.depot_ids] if state.depot_ids else [0] * state.num_vehicles
     result = solve_vrp(
         distance_matrix=matrix,
         num_vehicles=state.num_vehicles,
-        depots=depots,
-        demands=[s.demand for s in state.stops],
+        depots=depots_indices,
+        demands=[int(s.demand_kg) for s in state.stops],
         vehicle_capacities=state.vehicle_capacities,
     )
     solve_time_ms = (time.time() - start_time) * 1000
     cost = calculate_costs(result.get("total_distance", 0), state.num_vehicles)
 
     new_plan = models.RoutePlan(
+        depot_id=state.depot_ids[0] if state.depot_ids else "0",
+        plan_date=datetime.datetime.now().date(),
         num_vehicles=state.num_vehicles,
         num_stops=len(state.stops),
         total_distance_km=result.get("total_distance", 0) / 1000.0,
         solve_time_ms=solve_time_ms,
-        routes={**result, "cost": cost},
-        state=state.dict()
+        routes_json={**result, "cost": cost},
+        cost_optimized=cost,
+        state=state.model_dump() if hasattr(state, "model_dump") else state.dict()
     )
     db.add(new_plan)
     db.commit()
@@ -131,8 +127,9 @@ def replan_routes(disruption: dict, db: Session = Depends(get_db)):
         if "driver_id" in disruption:
             ids.append(disruption["driver_id"])
         for d_id in ids:
-            if d_id not in current_state.unavailable_drivers:
-                current_state.unavailable_drivers.append(d_id)
+            d_id_str = str(d_id)
+            if d_id_str not in current_state.unavailable_drivers:
+                current_state.unavailable_drivers.append(d_id_str)
     
     if disruption.get("type") == "road_blocked":
         edge = tuple(disruption["blocked_edge"])
@@ -148,15 +145,15 @@ def replan_routes(disruption: dict, db: Session = Depends(get_db)):
     # Exclude unavailable drivers by setting capacity to 0
     capacities = current_state.vehicle_capacities.copy()
     for d in current_state.unavailable_drivers:
-        capacities[d] = 0
+        capacities[int(d)] = 0
     
-    depots = current_state.depot_ids if current_state.depot_ids else [0] * current_state.num_vehicles
+    depots = [int(d) for d in current_state.depot_ids] if current_state.depot_ids else [0] * current_state.num_vehicles
     start_time = time.time()
     result = solve_vrp(
         distance_matrix=matrix,
         num_vehicles=current_state.num_vehicles,
         depots=depots,
-        demands=[s.demand for s in current_state.stops],
+        demands=[int(s.demand_kg) for s in current_state.stops],
         vehicle_capacities=capacities,
     )
     solve_time_ms = (time.time() - start_time) * 1000
@@ -167,22 +164,30 @@ def replan_routes(disruption: dict, db: Session = Depends(get_db)):
     dist_after = result.get("total_distance", 0) / 1000.0
     
     event = models.DisruptionEvent(
-        description=disruption.get("description", "Manual override"),
+        route_plan_id=prev_plan.id,
+        source=models.DisruptionSource.DISPATCHER_NL,
         disruption_type=disruption.get("type"),
+        description=disruption.get("description", "Manual override"),
         distance_before_km=dist_before,
         distance_after_km=dist_after,
+        cost_before=prev_plan.cost_optimized,
+        cost_after=cost,
         replan_time_ms=solve_time_ms
     )
     db.add(event)
 
     # Create new plan
     new_plan = models.RoutePlan(
+        depot_id=prev_plan.depot_id,
+        plan_date=prev_plan.plan_date,
         num_vehicles=current_state.num_vehicles,
         num_stops=len(current_state.stops),
         total_distance_km=dist_after,
         solve_time_ms=solve_time_ms,
-        routes={**result, "cost": cost},
-        state=current_state.dict()
+        routes_json={**result, "cost": cost},
+        cost_optimized=cost,
+        state=current_state.model_dump() if hasattr(current_state, "model_dump") else current_state.dict(),
+        parent_plan_id=prev_plan.id
     )
     db.add(new_plan)
     db.commit()
@@ -192,7 +197,7 @@ def replan_routes(disruption: dict, db: Session = Depends(get_db)):
 @app.get("/routes/current")
 def get_current_routes(db: Session = Depends(get_db)):
     plan = get_latest_plan(db)
-    return {"state": plan.state if plan else None, "solution": plan.routes if plan else None}
+    return {"state": plan.state if plan else None, "solution": plan.routes_json if plan else None}
 
 @app.get("/history")
 def get_history(db: Session = Depends(get_db)):
@@ -214,5 +219,5 @@ def get_map(db: Session = Depends(get_db)):
     plan = get_latest_plan(db)
     if not plan:
         raise HTTPException(400, "No solution available.")
-    html = render_route_map(RouteState(**plan.state), plan.routes)
+    html = render_route_map(RouteState(**plan.state), plan.routes_json)
     return {"html": html}
