@@ -1,6 +1,7 @@
 # viz/map_renderer.py
 import folium
 import requests
+import math
 import os
 from folium import plugins
 from solver.data_model import RouteState
@@ -26,8 +27,8 @@ def get_route_geometry(coordinates, api_key):
         pass
     return None
 
-def render_route_map(state: RouteState, solution: dict) -> str:
-    """
+def render_route_map(state: RouteState, solution: dict, current_vehicle_positions: list) -> str:
+    """ 
     Renders all vehicle routes on an interactive Folium map.
     Returns HTML string for embedding or saving.
     """
@@ -35,7 +36,7 @@ def render_route_map(state: RouteState, solution: dict) -> str:
 
     # Ensure we get depot indices correctly from the state
     if hasattr(state, 'depot_ids') and state.depot_ids:
-        depot_indices = [int(d) for d in state.depot_ids]
+        depot_indices = [int(d) for d in state.depot_ids if d.isdigit()] # Ensure conversion to int is safe
     else:
         # Fallback for legacy data/single depot
         depot_indices = [0] * state.num_vehicles
@@ -64,7 +65,7 @@ def render_route_map(state: RouteState, solution: dict) -> str:
     for vehicle_id, route_data in solution["routes"].items():
         stops_in_route = route_data["stops"]
         color = ROUTE_COLORS[int(vehicle_id) % len(ROUTE_COLORS)]
-        
+
         route_coords = []
         for stop_idx in stops_in_route:
             stop = state.stops[stop_idx]
@@ -120,6 +121,25 @@ def render_route_map(state: RouteState, solution: dict) -> str:
                     opacity=0.8,
                     tooltip=f"Driver {vehicle_id} — {route_data['distance']:.0f}m"
                 ).add_to(m)
+
+    # Add current vehicle positions as dynamic markers
+    for vehicle_pos in current_vehicle_positions:
+        # Match solver's vehicle_id (0,1,2...) to the actual Vehicle.id (UUID)
+        # This is a temporary mapping for demo purposes. In a real system,
+        # RoutePlan would store a map of solver_id -> vehicle_uuid.
+        solver_vehicle_id = None
+        for i, depot_id_str in enumerate(state.depot_ids):
+            if str(i) == vehicle_pos['id']: # Assuming vehicle.id is '0', '1', '2' etc.
+                solver_vehicle_id = i
+                break
+        
+        if solver_vehicle_id is not None:
+            color = ROUTE_COLORS[solver_vehicle_id % len(ROUTE_COLORS)]
+            folium.Marker(
+                location=[vehicle_pos['lat'], vehicle_pos['lon']],
+                popup=f"<b>Vehicle {vehicle_pos['plate_number']}</b><br>Status: {vehicle_pos['status']}",
+                icon=folium.Icon(color=color, icon="truck", prefix="fa")
+            ).add_to(m)
 
     # Add distance summary in bottom-right
     total_km = solution["total_distance"] / 1000

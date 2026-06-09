@@ -5,6 +5,7 @@ import sys, os
 from dotenv import load_dotenv
 import pandas as pd
 import plotly.express as px
+import time
 
 # Load environment variables FIRST
 load_dotenv()
@@ -49,6 +50,10 @@ if "prev_map_html" not in st.session_state:
     st.session_state.prev_map_html = None
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "sim_active" not in st.session_state:
+    st.session_state.sim_active = False
+if "sim_events" not in st.session_state:
+    st.session_state.sim_events = []
 if "agent" not in st.session_state:
     st.session_state.agent = build_dispatcher_agent()
 
@@ -103,11 +108,18 @@ with st.sidebar:
         st.caption("Waiting for initialization...")
 
     st.divider()
+    st.subheader("🛠️ Simulation Controls")
+    st.session_state.sim_active = st.toggle("Live Simulation Mode", value=st.session_state.sim_active)
+    sim_speed = st.select_slider("Sim Speed", options=[1, 2, 5, 10], value=2, help="Minutes advanced per tick")
+
+    st.divider()
     if st.button("🔄 Full System Reset", use_container_width=True, type="secondary"):
         st.session_state.initialized = False
         st.session_state.messages = []
         st.session_state.prev_map_html = None
         st.session_state.map_html = None
+        st.session_state.sim_active = False
+        st.session_state.sim_events = []
         st.rerun()
 
 # --- Auto-Initialization Logic ---
@@ -307,3 +319,25 @@ if st.session_state.current_solution:
                 st.caption(" → ".join([f"Stop {s}" for s in route['stops']]))
                 if st.button(f"Export Driver {vid} Manifest", key=f"btn_{vid}"):
                     st.toast(f"Manifest for Driver {vid} generated!")
+
+# --- Simulation Loop (Bottom of Script) ---
+if st.session_state.sim_active:
+    # Advance simulation by one step
+    try:
+        # Call the simulation step endpoint
+        sim_resp = httpx.post(
+            "http://localhost:8000/simulation/step", 
+            params={"minutes": sim_speed}, 
+            timeout=10.0
+        )
+        if sim_resp.status_code == 200:
+            new_events = sim_resp.json().get("events", [])
+            if new_events:
+                st.session_state.sim_events.extend(new_events)
+            
+            # Refresh map and state
+            fetch_current_state()
+            time.sleep(2) # Throttle to prevent UI flickering
+            st.rerun()
+    except Exception as e:
+        st.sidebar.error(f"Sim Connection Error: {e}")
