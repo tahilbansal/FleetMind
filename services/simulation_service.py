@@ -17,14 +17,16 @@ class SimulationService:
             return []
 
         disruptions = []
-        avg_speed_mps = 40 / 3.6  # 40 km/h converted to meters per second
-        distance_to_move = avg_speed_mps * (step_minutes * 60)
 
         for v_id_str, route_data in plan.routes_json.get("routes", {}).items():
             # Map solver vehicle index to database record (demo mapping)
             vehicle = db.query(Vehicle).offset(int(v_id_str)).first()
             if not vehicle:
                 continue
+
+            # Use vehicle-specific speed defined in its type (defaults to 40 km/h)
+            speed_kmh = vehicle.vehicle_type.avg_speed_kmh if vehicle.vehicle_type else 40
+            distance_to_move = (speed_kmh / 3.6) * (step_minutes * 60)
 
             if vehicle.status not in [VehicleStatus.EN_ROUTE, VehicleStatus.AVAILABLE]:
                 continue
@@ -40,26 +42,60 @@ class SimulationService:
                 vehicle.current_lon = start_node["lon"]
                 vehicle.status = VehicleStatus.EN_ROUTE
 
-            # Find the next target stop in the sequence that hasn't been reached
-            target_stop = None
-            for idx in stops_indices:
-                stop_data = plan.state["stops"][idx]
-                dist = SimulationService._haversine(vehicle.current_lat, vehicle.current_lon, 
-                                                 stop_data["lat"], stop_data["lon"])
-                if dist > 100: # Threshold for 'arrived' (100 meters)
-                    target_stop = stop_data
-                    break
-            
-            if not target_stop:
-                vehicle.status = VehicleStatus.AVAILABLE # Completed its route
-                continue
-
-            # Interpolate new position moving towards the target stop
-            new_lat, new_lon = SimulationService._move_towards(
-                vehicle.current_lat, vehicle.current_lon,
-                target_stop["lat"], target_stop["lon"],
-                distance_to_move
-            )
+            geometry = route_data.get("geometry", [])
+            if geometry:
+                # Find the current point on the path
+                min_dist = float('inf')
+                current_idx = 0
+                for i, pt in enumerate(geometry):
+                    d = SimulationService._haversine(vehicle.current_lat, vehicle.current_lon, pt[0], pt[1])
+                    if d < min_dist:
+                        min_dist = d
+                        current_idx = i
+                
+                # Move along the geometry segments until distance is consumed
+                remaining_dist = distance_to_move
+                curr_lat, curr_lon = vehicle.current_lat, vehicle.current_lon
+                
+                while remaining_dist > 0 and current_idx + 1 < len(geometry):
+                    next_pt = geometry[current_idx + 1]
+                    dist_to_next = SimulationService._haversine(curr_lat, curr_lon, next_pt[0], next_pt[1])
+                    
+                    if dist_to_next <= remaining_dist:
+                        # Jump to the next point and keep moving
+                        remaining_dist -= dist_to_next
+                        curr_lat, curr_lon = next_pt[0], next_pt[1]
+                        current_idx += 1
+                    else:
+                        # Move partially along this segment and stop
+                        curr_lat, curr_lon = SimulationService._move_towards(
+                            curr_lat, curr_lon, next_pt[0], next_pt[1], remaining_dist
+                        )
+                        remaining_dist = 0
+                
+                new_lat, new_lon = curr_lat, curr_lon
+                if current_idx + 1 >= len(geometry) and remaining_dist >= 0:
+                    vehicle.status = VehicleStatus.AVAILABLE
+            else:
+                # Fallback to stop-to-stop movement if no geometry available
+                target_stop = None
+                for idx in stops_indices:
+                    stop_data = plan.state["stops"][idx]
+                    dist = SimulationService._haversine(vehicle.current_lat, vehicle.current_lon, 
+                                                     stop_data["lat"], stop_data["lon"])
+                    if dist > 100:
+                        target_stop = stop_data
+                        break
+                
+                if not target_stop:
+                    vehicle.status = VehicleStatus.AVAILABLE
+                    continue
+                target_lat, target_lon = target_stop["lat"], target_stop["lon"]
+                new_lat, new_lon = SimulationService._move_towards(
+                    vehicle.current_lat, vehicle.current_lon,
+                    target_lat, target_lon,
+                    distance_to_move
+                )
             
             vehicle.current_lat = new_lat
             vehicle.current_lon = new_lon

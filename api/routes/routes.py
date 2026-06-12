@@ -9,6 +9,8 @@ from solver.vrp_solver import solve_vrp
 from services.cost_service import calculate_operational_costs as calculate_costs
 import models
 from models.enums import RoutePlanStatus
+import os
+from viz.map_renderer import get_route_geometry
 
 router = APIRouter(prefix="/routes", tags=["Routes"])
 
@@ -29,6 +31,18 @@ def initialize_routes(state: RouteState, db: Session = Depends(get_db)):
         demands=[int(s.demand_kg) for s in state.stops],
         vehicle_capacities=state.vehicle_capacities,
     )
+
+    # Fetch and store road geometry for simulation
+    api_key = os.getenv("ORS_API_KEY")
+    if api_key and result.get("status") == "SUCCESS":
+        for v_id, route_data in result["routes"].items():
+            stops_indices = route_data["stops"]
+            ors_coords = [[state.stops[idx].lon, state.stops[idx].lat] for idx in stops_indices]
+            geometry = get_route_geometry(ors_coords, api_key)
+            if geometry:
+                # Store as [lat, lon] for internal consistency
+                route_data["geometry"] = [[c[1], c[0]] for c in geometry]
+
     solve_time_ms = (time.time() - start_time) * 1000
     cost = calculate_costs(result.get("total_distance", 0), state.num_vehicles)
 
@@ -92,6 +106,17 @@ def replan_routes(disruption: dict, db: Session = Depends(get_db)):
         demands=[int(s.demand_kg) for s in current_state.stops],
         vehicle_capacities=capacities,
     )
+
+    # Fetch and store road geometry for simulation
+    api_key = os.getenv("ORS_API_KEY")
+    if api_key and result.get("status") == "SUCCESS":
+        for v_id, route_data in result["routes"].items():
+            stops_indices = route_data["stops"]
+            ors_coords = [[current_state.stops[idx].lon, current_state.stops[idx].lat] for idx in stops_indices]
+            geometry = get_route_geometry(ors_coords, api_key)
+            if geometry:
+                route_data["geometry"] = [[c[1], c[0]] for c in geometry]
+
     solve_time_ms = (time.time() - start_time) * 1000
     cost = calculate_costs(result.get("total_distance", 0), current_state.num_vehicles)
 

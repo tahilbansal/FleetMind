@@ -3,6 +3,7 @@ import folium
 import requests
 import math
 import os
+from folium.plugins import AntPath
 from folium import plugins
 from solver.data_model import RouteState
 
@@ -26,6 +27,20 @@ def get_route_geometry(coordinates, api_key):
     except Exception:
         pass
     return None
+
+def split_route_by_position(coords, current_pos):
+    """Splits a list of [lat, lon] coordinates into (past, future) based on current position."""
+    if not coords or not current_pos:
+        return [], coords
+    
+    min_dist = float('inf')
+    idx = 0
+    for i, pt in enumerate(coords):
+        dist = (pt[0] - current_pos[0])**2 + (pt[1] - current_pos[1])**2
+        if dist < min_dist:
+            min_dist = dist
+            idx = i
+    return coords[:idx+1], coords[idx:]
 
 def render_route_map(state: RouteState, solution: dict, current_vehicle_positions: list) -> str:
     """ 
@@ -76,10 +91,10 @@ def render_route_map(state: RouteState, solution: dict, current_vehicle_position
             if stop_idx not in unique_depot_indices:
                 folium.CircleMarker(
                     location=[stop.lat, stop.lon],
-                    radius=8,
+                    radius=6,
                     color=color,
                     fill=True,
-                    fill_opacity=0.8,
+                    fill_opacity=0.6,
                     popup=folium.Popup(
                         f"<b>Stop {stop_idx}: {stop.name}</b><br>"
                         f"Driver: {vehicle_id}<br>"
@@ -89,56 +104,64 @@ def render_route_map(state: RouteState, solution: dict, current_vehicle_position
                     tooltip=f"Driver {vehicle_id} — {stop.name}"
                 ).add_to(m)
         
+        # Find current position for this vehicle to split the line
+        current_pos = None
+        vehicle_status = "active"
+        for v_pos in current_vehicle_positions:
+            # Matching logic depends on how IDs are passed from the frontend/simulator
+            if v_pos['id'] == str(vehicle_id):
+                current_pos = [v_pos['lat'], v_pos['lon']]
+                vehicle_status = v_pos.get('status', 'active').lower()
+                break
+
         # Draw route line
         if len(stops_in_route) > 1:
-            if api_key:
-                # Real road routing using OpenRouteService (one call per vehicle)
+            full_geometry = []
+            # Use pre-stored road path if available
+            if "geometry" in route_data:
+                full_geometry = route_data["geometry"]
+            elif api_key:
                 ors_coords = [[state.stops[idx].lon, state.stops[idx].lat] for idx in stops_in_route]
                 geometry = get_route_geometry(ors_coords, api_key)
-                
                 if geometry:
-                    # ORS returns [lon, lat] — Folium needs [lat, lon]
-                    folium_coords = [[c[1], c[0]] for c in geometry]
+                    full_geometry = [[c[1], c[0]] for c in geometry]
+            
+            if not full_geometry:
+                full_geometry = route_coords
+
+            if current_pos:
+                past, future = split_route_by_position(full_geometry, current_pos)
+                # Render past path (faded/dotted)
+                if past:
                     folium.PolyLine(
-                        locations=folium_coords,
-                        color=color, weight=4,
-                        opacity=0.85, smooth_factor=1,
-                        tooltip=f"Driver {vehicle_id}"
+                        locations=past, color=color, weight=2, 
+                        opacity=0.4, dash_array='5, 10'
                     ).add_to(m)
-                else:
-                    # Fallback to straight lines if API call fails
-                    folium.PolyLine(
-                        locations=route_coords,
-                        color=color, weight=3,
-                        opacity=0.8,
-                        tooltip=f"Driver {vehicle_id} (fallback)"
+                # Render future path (animated AntPath)
+                if future:
+                    AntPath(
+                        locations=future, color=color, weight=4,
+                        opacity=0.8, delay=1000, pulse_color='#ffffff'
                     ).add_to(m)
             else:
-                # Fallback to straight lines if API key is missing
+                # Standard PolyLine if no real-time position
                 folium.PolyLine(
-                    locations=route_coords,
-                    color=color, weight=3,
-                    opacity=0.8,
-                    tooltip=f"Driver {vehicle_id} — {route_data['distance']:.0f}m"
+                    locations=full_geometry, color=color, weight=4, opacity=0.7
                 ).add_to(m)
 
-    # Add current vehicle positions as dynamic markers
-    for vehicle_pos in current_vehicle_positions:
-        # Match solver's vehicle_id (0,1,2...) to the actual Vehicle.id (UUID)
-        # This is a temporary mapping for demo purposes. In a real system,
-        # RoutePlan would store a map of solver_id -> vehicle_uuid.
-        solver_vehicle_id = None
-        for i, depot_id_str in enumerate(state.depot_ids):
-            if str(i) == vehicle_pos['id']: # Assuming vehicle.id is '0', '1', '2' etc.
-                solver_vehicle_id = i
-                break
-        
-        if solver_vehicle_id is not None:
-            color = ROUTE_COLORS[solver_vehicle_id % len(ROUTE_COLORS)]
+        # Add vehicle marker with fault logic
+        if current_pos:
+            v_color = color
+            v_icon = "truck"
+            if vehicle_status in ["fault", "error", "broken", "delayed"]:
+                v_color = "red"
+                v_icon = "exclamation-triangle"
+            
             folium.Marker(
-                location=[vehicle_pos['lat'], vehicle_pos['lon']],
-                popup=f"<b>Vehicle {vehicle_pos['plate_number']}</b><br>Status: {vehicle_pos['status']}",
-                icon=folium.Icon(color=color, icon="truck", prefix="fa")
+                location=current_pos,
+                popup=f"<b>Vehicle {vehicle_id}</b><br>Status: {vehicle_status.upper()}",
+                icon=folium.Icon(color=v_color, icon=v_icon, prefix="fa"),
+                tooltip=f"Driver {vehicle_id} ({vehicle_status})"
             ).add_to(m)
 
     # Add distance summary in bottom-right

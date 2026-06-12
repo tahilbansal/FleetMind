@@ -123,6 +123,27 @@ with st.sidebar:
         st.rerun()
 
 # --- Auto-Initialization Logic ---
+@st.fragment(run_every=5)
+def notification_center():
+    """Polls for disruptions and alerts globally across all tabs."""
+    if not st.session_state.initialized:
+        return
+    try:
+        resp = httpx.get("http://localhost:8000/history", timeout=2.0, follow_redirects=True)
+        if resp.status_code == 200:
+            disruptions = resp.json().get("disruptions", [])
+            # Show all active (unresolved) alerts
+            active = [d for d in disruptions if not d.get("resolution")]
+            for alert in active:
+                if alert.get("disruption_type") == "weather_alert":
+                    st.warning(f"⚠️ **Weather Alert:** {alert.get('description')}")
+                elif alert.get("disruption_type") == "vehicle_breakdown":
+                    st.error(f"🚨 **Breakdown:** {alert.get('description')}")
+    except Exception:
+        pass
+
+notification_center()
+
 if not st.session_state.initialized:
     with st.spinner("🚀 Bootstrapping Fleet Configuration from Database..."):
         try:
@@ -202,19 +223,33 @@ with tab_what_if:
 
 with tab_routes:
     st.subheader(" Live Fleet Tracking")
-    if st.session_state.map_html:
-        if st.session_state.prev_map_html:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Previous Plan** (Baseline)")
-                st.components.v1.html(st.session_state.prev_map_html, height=600)
-            with c2:
-                st.markdown("**Optimized Plan** (Active)")
-                st.components.v1.html(st.session_state.map_html, height=600)
+    
+    # Use fragments to update the map without reloading the entire UI
+    @st.fragment(run_every=2 if st.session_state.sim_active else None)
+    def render_live_map():
+        if st.session_state.sim_active:
+            try:
+                # Advance simulation by one step
+                httpx.post("http://localhost:8000/simulation/step", params={"minutes": sim_speed}, timeout=5.0)
+                fetch_current_state()
+            except:
+                pass
+
+        if st.session_state.map_html:
+            if st.session_state.prev_map_html:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Previous Plan** (Baseline)")
+                    st.components.v1.html(st.session_state.prev_map_html, height=600)
+                with c2:
+                    st.markdown("**Optimized Plan** (Active)")
+                    st.components.v1.html(st.session_state.map_html, height=600)
+            else:
+                st.components.v1.html(st.session_state.map_html, height=700)
         else:
-            st.components.v1.html(st.session_state.map_html, height=700)
-    else:
-        st.info("Initializing map...")
+            st.info("Initializing map...")
+
+    render_live_map()
 
 with tab_ops:
     st.subheader("💬 AI Dispatcher Terminal")
@@ -269,7 +304,7 @@ with tab_analytics:
             
         # Line chart for solve time history
         try:
-            hist_resp = httpx.get("http://localhost:8000/history")
+            hist_resp = httpx.get("http://localhost:8000/history", follow_redirects=True)
             if hist_resp.status_code == 200:
                 hist_data = hist_resp.json()
                 if hist_data["plans"]:
@@ -282,7 +317,7 @@ with tab_analytics:
 with tab_history:
     st.subheader("📜 Operational Audit Trail")
     try:
-        hist_resp = httpx.get("http://localhost:8000/history")
+        hist_resp = httpx.get("http://localhost:8000/history", follow_redirects=True)
         if hist_resp.status_code == 200:
             data = hist_resp.json()
             st.write("### Recent Disruptions")
@@ -319,25 +354,3 @@ if st.session_state.current_solution:
                 st.caption(" → ".join([f"Stop {s}" for s in route['stops']]))
                 if st.button(f"Export Driver {vid} Manifest", key=f"btn_{vid}"):
                     st.toast(f"Manifest for Driver {vid} generated!")
-
-# --- Simulation Loop (Bottom of Script) ---
-if st.session_state.sim_active:
-    # Advance simulation by one step
-    try:
-        # Call the simulation step endpoint
-        sim_resp = httpx.post(
-            "http://localhost:8000/simulation/step", 
-            params={"minutes": sim_speed}, 
-            timeout=10.0
-        )
-        if sim_resp.status_code == 200:
-            new_events = sim_resp.json().get("events", [])
-            if new_events:
-                st.session_state.sim_events.extend(new_events)
-            
-            # Refresh map and state
-            fetch_current_state()
-            time.sleep(2) # Throttle to prevent UI flickering
-            st.rerun()
-    except Exception as e:
-        st.sidebar.error(f"Sim Connection Error: {e}")

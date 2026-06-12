@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from sqlalchemy import inspect
+import asyncio
+from jobs.disruption_monitor import run_monitor
 
 load_dotenv()
 
@@ -22,6 +24,10 @@ app = FastAPI(title="VRP Dispatch API")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
+
+@app.on_event("startup")
+async def start_background_jobs():
+    asyncio.create_task(run_monitor())
 
 @app.on_event("startup")
 def seed_fleet_config():
